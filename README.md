@@ -18,7 +18,7 @@ This project requires access to some public IP addresses.  On the public facing 
 
 ## Installation
 
-See [INSTALLATION.md](INSTALLATION.md)
+See the [installation](INSTALL.md) [guide](INSTALL.md) for all the gory details.
 
 ## Contributing
 
