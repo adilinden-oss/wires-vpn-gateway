@@ -278,22 +278,4 @@ case $1 in
         ;;
 esac
 
-
-
-exit
-
-outdir=/var/www/html/dvN4fEhBm5
-
-
-echo "Generating cert for client: $client"
-
-# Create cert
-
-
-# Convert to Windows line feeds
-sed -i 's/$/\r/' $keydir/$client.ovpn
-
-# Bundle file
-cd $keydir
-zip $outdir/${client}-openvpn-config.zip ca.crt $client.crt $client.key $client.ovpn
-
+# End
