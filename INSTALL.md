@@ -23,7 +23,7 @@ apt-get install open-vm-tools vim bzip2 gzip zip less build-essential ntp fail2b
 
 ### Remove Packages
 
-If commone system utilities were selected during install than all NFS related components were istalled and enabled.  Remove what's not needed.
+If common system utilities were selected during install than all NFS related components were installed and enabled.  Remove what's not needed.
 
 ```
 apt-get remove --auto-remove nfs-common rpcbind
@@ -86,7 +86,7 @@ adduser --quiet --system --ingroup openvpn --no-create-home \
     --disabled-password openvpn
 ```
 
-Allow openvpn to execute the iptables command create the '/etc/sudoers.d/openvpn' file with the following content:
+Allow openvpn to execute the iptables command create the `/etc/sudoers.d/openvpn` file with the following content:
 
 ```
 Defaults:openvpn !requiretty
