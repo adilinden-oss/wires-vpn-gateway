@@ -1,0 +1,299 @@
+#!/bin/bash
+#
+# This script wraps the easy_rsa script to package certs and
+# configs for users.
+#
+# ---
+#
+# MIT License
+# 
+# Copyright (c) 2017 Adi Linden
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# 
+
+# Define some useful things
+vpn_name=10.73.73.30
+vpn_port=443
+
+# The base directory for certificates
+out_base="/var/www/html/config"
+url_base="http://${vpn_name}/config"
+
+# Create client config from template
+function make_config
+{
+    cat << ENDOFCONFIG
+# C:\Users\<username>\OpenVPN\config\\${client}.ovpn
+client
+remote ${vpn_name}
+port ${vpn_port}
+proto udp
+dev tun
+dev-type tun
+ca ca.crt
+cert ${client}.crt
+key ${client}.key
+ns-cert-type server
+reneg-sec 86400
+;cipher aes-128-cbc
+cipher none
+comp-lzo yes
+verb 3
+; Set the name of the Windows TAP network interface device here
+dev-node MyTAP
+ENDOFCONFIG
+}
+
+##
+## End of user definable things
+##
+
+# Our private database to track issues certificates
+client_list="client_certs.txt" 
+
+# The easy_rsa install directories
+ovpn_easy_rsa="/etc/openvpn/easy-rsa"
+ovpn_key_dir="${ovpn_easy_rsa}/keys"
+
+# Our current location
+we_are_here="$PWD"
+
+# Usage
+function usage 
+{
+    echo "Usage: $0 -n cn email | -u cn  | --update-all"
+    echo "    -n common_name email    : Create client config and cert"
+    echo "    -u common_name          : Update client config keeping same cert"
+    echo "    --update-all            : Update all client configs"
+}
+
+# Find in list
+function find_client
+{
+    local match=$1
+    local col1
+    local col2
+    local col3
+    local col4
+
+    # Get values from list
+    while read col1 col2 col3 col4; do
+        if [ $col1 = $match ]; then
+            lclient=$col1
+            lemail=$col2
+            lurl=$col3
+            lpath=$col4
+            return
+        fi
+    done < "$client_list"
+    return
+}
+
+# The main function to create new client
+function make_client
+{
+    # Make sure we have client/common_name and email
+    if [ "x$client" = "x" ] || [ "x$email" = "x" ] ; then
+        usage
+        exit
+    fi
+
+    # Stop if we find client in list
+    #awk -v f=$client '$1==f {exit 1}' "$client_list"
+    #if [ $? -eq 1 ]; then
+    #    echo "Cert for $client already exists!"
+    #    exit
+    #fi
+
+    # Alternate
+    find_client "$client"
+    if [ "x$lclient" = "x$client" ]; then
+        echo "Cert for $client already exists!"
+        exit
+    fi
+
+    # Run pkitool form easy_rsa
+    # We "stole" the invocation from build-key
+    cd "$ovpn_easy_rsa"
+    source vars
+    export KEY_CN="$client"
+    export KEY_EMAIL="$email"
+    export KEY_ALTNAMES="email:KEY_EMAIL"
+
+    # From build-keys
+    export EASY_RSA="${EASY_RSA:-.}"
+    "$EASY_RSA/pkitool" --batch "$client"
+
+    # Generate OpenVPN configuration
+    make_config > "${ovpn_key_dir}/$client.ovpn"
+
+    # Convert to Windows
+    sed -i 's/$/\r/' "${ovpn_key_dir}/$client.ovpn"
+
+    # Create randomized component for output location
+    rand=$(date +%s | sha256sum | base64 | head -c 12)
+
+    # Create output directory
+    mkdir -p "${out_base}/${rand}"
+
+    out_path="${out_base}/${rand}/${client}-openvpn-config.zip"
+    url_path="${url_base}/${rand}/${client}-openvpn-config.zip"    
+
+    # Create our config bundle/zip
+    cd "$ovpn_key_dir"
+    zip "$out_path" ca.crt $client.crt $client.key $client.ovpn
+
+    # Restore path
+    cd "$we_are_here"
+
+    # Record our deed done
+    echo "$client $email $url_path $out_path" >> "$client_list"
+
+    echo
+    echo "+------->"
+    echo "| Created ..."
+    echo "|"
+    echo "| CN:    $client"
+    echo "| Email: $email"
+    echo "| File:  $out_path"
+    echo "| URL:   $url_path"
+    echo "+------->"
+    echo
+}
+
+# The main function to update client ovpn config
+function update_client
+{
+    # Make sure we have client/common_name
+    if [ "x$client" = "x" ] ; then
+        usage
+        exit
+    fi
+
+    # Get client details
+    find_client "$client"
+    if [ "x$lclient" = "x" ]; then
+        echo "Cert for $client not found!"
+        exit
+    fi
+
+    # Make sure path exists
+    if [ "x$lpath" = "x" ]; then
+        echo "Missing path!"
+        exit
+    fi
+
+    # Make sure we have a target directory
+    dest=$(dirname "$lpath")
+    [ -d "$dest" ] || mkdir -p "$dest"
+
+    # Generate updated OpenVPN configuration
+    make_config > "${ovpn_key_dir}/$client.ovpn"
+
+    # Create our config bundle/zip
+    cd "$ovpn_key_dir"
+    zip "$lpath" ca.crt $client.crt $client.key $client.ovpn
+
+    echo
+    echo "+------->"
+    echo "| Updated config ..."
+    echo "|"
+    echo "| CN:    $client"
+    echo "| Email: $lemail"
+    echo "| File:  $lpath"
+    echo "| URL:   $lurl"
+    echo "+------->"
+}
+
+# The main function to update client ovpn config
+function update_all
+{
+    # Parse list
+    while read lclient lemail lurl lpath; do
+
+        # Skip empties
+        if [ "x$lclient" = "x" ] || [ "x$lpath" = "x" ]; then
+            continue
+        fi
+
+        echo "Doing $lclient ... "
+
+        # Make sure we have a target directory
+        dest=$(dirname "$lpath")
+        [ -d "$dest" ] || mkdir -p "$dest"
+
+        # Generate updated OpenVPN configuration
+        client="$lclient"
+        make_config > "${ovpn_key_dir}/$client.ovpn"
+
+        # Create our config bundle/zip
+        cd "$ovpn_key_dir"
+        zip "$lpath" ca.crt $client.crt $client.key $client.ovpn
+
+    done < "$client_list"
+}
+
+
+##
+##  Start of main, so to speak
+##
+
+# Get args
+case $1 in
+    -n)
+        # Create new client
+        client=$2
+        email=$3
+        make_client
+        ;;
+    -u)
+        # Update client config
+        client=$2
+        update_client
+        ;;
+    --update-all)
+        # Update all configs
+        update_all
+        ;;
+    *)
+        usage;
+        exit
+        ;;
+esac
+
+
+
+exit
+
+outdir=/var/www/html/dvN4fEhBm5
+
+
+echo "Generating cert for client: $client"
+
+# Create cert
+
+
+# Convert to Windows line feeds
+sed -i 's/$/\r/' $keydir/$client.ovpn
+
+# Bundle file
+cd $keydir
+zip $outdir/${client}-openvpn-config.zip ca.crt $client.crt $client.key $client.ovpn
+

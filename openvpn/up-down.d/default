@@ -1,0 +1,32 @@
+#
+# Default applied by up.sh/down.sh when a matching client file
+# cannot be located.
+#
+# See the 'examples' file for lengthy description and examples.
+# 
+
+# Remove chain on client disconnect
+down iptables-purge $chain
+
+# Create $iptables chain
+up iptables-purge $chain
+up $iptables -N $chain
+
+# Wires-X open ports
+up $iptables -A $chain -p udp --dport 46100 -j ACCEPT
+up $iptables -A $chain -p udp --dport 46110 -j ACCEPT
+up $iptables -A $chain -p udp --dport 46112 -j ACCEPT
+up $iptables -A $chain -p udp --dport 46114 -j ACCEPT
+up $iptables -A $chain -p udp --dport 46120 -j ACCEPT
+up $iptables -A $chain -p udp --dport 46122 -j ACCEPT
+
+# Firewall allowing ICMP
+up $iptables -A $chain -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+up $iptables -A $chain -p icmp --icmp-type 8 -m limit --limit 10/second -j ACCEPT
+up $iptables -A $chain -p udp -j REJECT --reject-with icmp-port-unreachable
+up $iptables -A $chain -p tcp -j REJECT --reject-with tcp-reset
+up $iptables -A $chain -j REJECT --reject-with icmp-proto-unreachable
+
+# Insert into FORWARD table
+up $iptables -I FORWARD -i ampr0 -d $remip -j $chain -m comment --comment $comment
+up $iptables -I FORWARD -i eth0 -d $remip -j $chain -m comment --comment $comment

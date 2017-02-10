@@ -1,0 +1,7 @@
+#
+# OpenVPN matches these files upon every connection.  If a file matching
+# the common name is found, its directives will be applied.  This allows
+# for user specific settings.
+#
+
+#ifconfig-push 10.73.74.130 255.255.255.240

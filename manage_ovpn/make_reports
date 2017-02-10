@@ -1,0 +1,722 @@
+#!/bin/bash
+#
+# This script untilizes the certificate list from the 'make_client_cert'
+# script and the status file from OpenVPN to generate usage statistics
+# and current client connection status. 
+#
+# ---
+#
+# MIT License
+# 
+# Copyright (c) 2017 Adi Linden
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+# 
+# ---
+#
+# Parse OpenVPN status log version 3
+#
+# To get status log place this in server config:
+#
+#     status /var/run/openvpn/status.txt
+#     status-version 3
+#
+# Example line from status file
+#
+# HEADER  CLIENT_LIST Common Name Real Address  Virtual Address Bytes Received  Bytes Sent  Connected Since Connected Since (time_t)  Username
+# CLIENT_LIST n0call  192.168.77.55:443  10.73.74.130  23237 33519 Fri Dec 30 18:35:13 2016  1483144513  UNDEF
+#
+# To generate status page place something like this in crontab:
+#
+# */1 * * * * cd /root/manage_ovpn; ./make_reports status > /dev/null 2>&1
+#
+# To generate graphs place something like this in crontab:
+#
+# */5 * * * * cd /root/manage_ovpn; ./make_reports graphs > /dev/null 2>&1
+#
+
+# To make the status.html page an easy to access index.html, create a
+# symlink.  Assuming the default file locations for this script, this
+# would be something like this:
+#
+#    ln -s /var/www/html/reports/htm/status.html /var/www/html/reports/index.html
+#
+
+# Interface to graph
+interfaces="eth0 tun0"
+
+# Some files we need to consult
+status_file="/var/run/openvpn/status.txt"
+client_list="client_certs.txt"
+heard_file="heard.txt"
+
+# doc_root  : the root of the html files in the filesystem.  It is the
+#             common root that all the paths are build on.  These paths
+#             are used by the script to write and read files.  This
+#             would be the 'root' directive in nginx or 'DocumentRoot'
+#             in apache.
+# url_root  : the root of files from a web browsers perspectuve.  Just
+#             like the 'Doc_root' above, all other paths are derived
+#             from it.  This would be any url path component following
+#             'http://example.com'.
+doc_root="/var/www/html/reports"
+url_root="/reports"
+
+# *_base    : the path component common to the filesystems and url
+#             location of directory. 
+rrd_base="rrd"
+png_base="png"
+htm_base="htm"
+
+# *_dir_doc : the final absolute path to the directory in the file
+#             system.
+rrd_dir_doc="${doc_root}/${rrd_base}"
+png_dir_doc="${doc_root}/${png_base}"
+htm_dir_doc="${doc_root}/${htm_base}"
+
+# *_dir_url : the final absolute url of the directory from a web
+#             perspective.
+rrd_dir_url="${url_root}/${rrd_base}"
+png_dir_url="${url_root}/${png_base}"
+htm_dir_url="${url_root}/${htm_base}"
+
+# These are the full paths to rrd files
+rrd_doc="${rrd_dir_doc}/\${ui}.rrd"
+rrd_url="${rrd_dir_url}/\${ui}.rrd"
+
+# These are the full paths to png files
+day_png_doc="${png_dir_doc}/\${ui}-day.png"
+day_png_url="${png_dir_url}/\${ui}-day.png"
+
+week_png_doc="${png_dir_doc}/\${ui}-week.png"
+week_png_url="${png_dir_url}/\${ui}-week.png"
+
+month_png_doc="${png_dir_doc}/\${ui}-month.png"
+month_png_url="${png_dir_url}/\${ui}-month.png"
+
+year_png_doc="${png_dir_doc}/\${ui}-year.png"
+year_png_url="${png_dir_url}/\${ui}-year.png"
+
+day_idx_png_doc="${png_dir_doc}/\${ui}-day-idx.png"
+day_idx_png_url="${png_dir_url}/\${ui}-day-idx.png"
+
+week_idx_png_doc="${png_dir_doc}/\${ui}-week-idx.png"
+week_idx_png_url="${png_dir_url}/\${ui}-week-idx.png"
+
+long_idx_png_doc="${png_dir_doc}/\${ui}-long-idx.png"
+long_idx_png_url="${png_dir_url}/\${ui}-long-idx.png"
+
+# These are the full paths to various html files created
+status_doc="${htm_dir_doc}/status.html"
+status_url="${htm_dir_url}/status.html"
+
+active_doc="${htm_dir_doc}/active-graphs.html"
+active_url="${htm_dir_url}/active-graphs.html"
+
+all_doc="${htm_dir_doc}/all-graphs.html"
+all_url="${htm_dir_url}/all-graphs.html"
+
+detail_doc="${htm_dir_doc}/\${ui}-detail.html"
+detail_url="${htm_dir_url}/\${ui}-detail.html"
+
+# Define some time variables
+time_now=$(date '+%s')
+date_now=$(date '+%Y-%m-%d_%H:%M:%S')
+
+# Ignore clients not heard in (seconds)
+#   1 week = 60 * 60 * 24 * 7
+time_ignore=$((60 * 60 * 24 * 7))
+
+##
+##  I want all of this in one file.  So here is function that's
+##  called at the bottom of the file.  That's because bash
+##  executes code in a linear fashion, no forward declaration
+##  of functions.
+##
+function Main
+{
+    # Simple for now
+    for arg in $@; do
+        case $1 in
+            graphs)
+                Do_Graphs
+                ;;
+            status)
+                Do_Status
+                ;;
+            *)
+                echo "Missing or invalid argument!"
+                echo "See script comments"
+                exit
+                ;;
+        esac
+        shift
+    done
+}
+
+function Do_Status
+{
+    create_html_head "Connected Clients"        >  "$status_doc"
+    create_html_nav status                      >> "$status_doc"
+    create_html_status_table                    >> "$status_doc"
+    create_html_foot                            >> "$status_doc"
+    echo "Created HTML: status.html"
+
+}
+
+function Do_Graphs
+{
+    # Create our base directories
+    [ -d "$rrd_dir_doc" ] || mkdir -p "$rrd_dir_doc"
+    [ -d "$png_dir_doc" ] || mkdir -p "$png_dir_doc"
+    [ -d "$htm_dir_doc" ] || mkdir -p "$htm_dir_doc"
+
+    # Create heard file
+    [ -f "$heard_file" ] || echo "CN TIME DATE" > "$heard_file"
+
+    #
+    # Create and update rrd
+    #
+
+    # Loop through interfaces
+    for int in $interfaces; do
+
+        # Create ethernet rrd
+        create_rrd_traffic "$int"
+
+        # Update ethernet rrd
+        update_rrd_traffic "$int" $(fetch_int "$int" "RX") $(fetch_int "$int" "TX")
+
+    done
+
+    # Parse the client list containing all of our certs
+    while read cn email url path; do
+
+        # Skip invalid (empty) entries
+        if [ -z "$cn" ] || [ -z "$email" ] || [ -z "$url" ] || [ -z "$path" ]; then
+            continue;
+        fi
+
+        # Create rrd
+        create_rrd_traffic "$cn"
+
+        # Update rrd
+        update_rrd_traffic "$cn" $(fetch_status "$cn" "RX") $(fetch_status "$cn" "TX")
+
+    done < "$client_list"
+
+    #
+    # Create HTML
+    #
+
+    # Graph listing head
+    create_html_head "Traffic Graphs (Active)"  >  "$active_doc"
+    create_html_nav active                      >> "$active_doc"
+    create_html_head "Traffic Graphs (All)"     >  "$all_doc"
+    create_html_nav all                         >> "$all_doc"
+
+    # Loop through interfaces
+    for int in $interfaces; do
+
+        # Create network graph
+        create_graphs "$int"
+
+        # Add to index table
+        create_html_overview_item "$int"        >> "$active_doc"
+        create_html_overview_item "$int"        >> "$all_doc"
+
+        # Network detail page
+        local ui="$int"
+        create_html_head "Traffic: $int"        >  "$(eval echo $detail_doc)"
+        create_html_nav " " "Detail: $int"          >> "$(eval echo $detail_doc)"
+        create_html_detail_item "$int"          >> "$(eval echo $detail_doc)"
+        create_html_foot                        >> "$(eval echo $detail_doc)"
+
+        echo "Created HTML: $int"
+
+    done
+
+    # Parse the client list containing all of our certs
+    while read cn email url path; do
+
+        # Skip invalid (empty) entries
+        if [ -z "$cn" ] || [ -z "$email" ] || [ -z "$url" ] || [ -z "$path" ]; then
+            continue;
+        fi
+
+        # Create  graph
+        create_graphs "$cn"
+
+        # Add to index table 
+        #echo "<br />" >> "$active_doc"
+
+        # Do not include expired/stale entries in index
+        if check_and_update_heard "$cn"; then
+            create_html_overview_item "$cn"     >> "$active_doc"
+            create_html_overview_item "$cn"     >> "$all_doc"
+        else
+            create_html_overview_item "$cn"     >> "$all_doc"
+        fi
+
+        # Client detail page
+        local ui="$cn"
+        create_html_head "Traffic: $cn"         >  "$(eval echo $detail_doc)"
+        create_html_nav "Detail: $cn"           >> "$(eval echo $detail_doc)"
+        create_html_detail_item "$cn"           >> "$(eval echo $detail_doc)"
+        create_html_foot                        >> "$(eval echo $detail_doc)"
+
+        echo "Created HTML: $cn"
+
+    done < "$client_list"
+
+    create_html_foot                            >> "$active_doc"
+    create_html_foot                            >> "$all_doc"
+}
+
+##
+## Functions
+##
+
+function check_and_update_heard
+{
+    # $1 -> cn
+
+    local cn=$1
+    local s
+
+    # Find cn in status file
+    status_cn=$(awk -v h="CLIENT_LIST" -v cn="$cn" '$1==h && $2==cn {print $2}' "$status_file")
+
+    # Find timestamp in heard file
+    heard_time=$(awk -v cn="$cn" '$1==cn {print $2}' "$heard_file")
+
+    # In status file
+    #   No  - In heared?
+    #     No                  : NG
+    #     Yes - Expired?
+    #       No                : G  
+    #       Yes               : NG
+    #   Yes - In heard?
+    #     No  - Add to heard  : G
+    #     Yes - Update heard  : G
+
+    if [ -z "$status_cn" ]; then
+        if [ -z "$heard_time" ]; then
+            return 1
+        else 
+            if [ "$heard_time" -gt $(($time_now - $time_ignore)) ]; then
+                return 0
+            else
+                return 1
+            fi
+        fi
+    else
+        if [ -z "$heard_time" ]; then
+            echo "$cn $time_now $date_now" >> "$heard_file"
+            return 0
+        else
+            s=$(awk -v cn="$cn" -v t="$time_now" -v d="$date_now" '$1==cn {$2=t; $3=d}1' "$heard_file")
+            echo "$s" > "$heard_file"
+            return 0
+        fi
+    fi
+
+    # Should not ever get here!
+    return 2
+}
+
+function create_rrd_traffic
+{
+    # $1 -> cn or interface
+
+    local ui="$1"
+    local rrd="$(eval echo $rrd_doc)"
+
+    if [ ! -e "$rrd" ]; then
+
+        # We needed to use DERIVE instead of GAUGE to deal with
+        # counter rollover.  GAUGE tries to guess the 32 bit
+        # or 64 bit rollover boundary.  However, this doesn't
+        # work with the OpenVPN status or eth0 counters as they
+        # may arbitrarily reset, causing a large spike in graph.
+        # DERIVE does not try to geuss boundary and instead
+        # produces a UNKNOWN on counter reset. Much preferred.
+
+        #rrdtool create "$rrd"                       \
+        #    --step 300                              \
+        #    DS:bytes_rx:COUNTER:600:0:125000000     \
+        #    DS:bytes_tx:COUNTER:600:0:125000000     \
+        #    RRA:AVERAGE:0:360:576                   \
+        #    RRA:AVERAGE:0:30:576                    \
+        #    RRA:AVERAGE:0:7:576                     \
+        #    RRA:AVERAGE:0:1:576                     \
+        #    RRA:MAX:0:360:576                       \
+        #    RRA:MAX:0:30:576                        \
+        #    RRA:MAX:0:7:576                         \
+        #    RRA:MAX:0:1:576
+        rrdtool create "$rrd"                       \
+            --step 300                              \
+            DS:bytes_rx:DERIVE:600:0:U              \
+            DS:bytes_tx:DERIVE:600:0:U              \
+            RRA:AVERAGE:0:360:576                   \
+            RRA:AVERAGE:0:30:576                    \
+            RRA:AVERAGE:0:7:576                     \
+            RRA:AVERAGE:0:1:576                     \
+            RRA:MAX:0:360:576                       \
+            RRA:MAX:0:30:576                        \
+            RRA:MAX:0:7:576                         \
+            RRA:MAX:0:1:576
+
+        echo "Created rrd: $cn, $rrd ..."
+    fi
+}
+
+function update_rrd_traffic
+{
+    # $1 -> cn or interface
+
+    local ui="$1"
+    local rrd="$(eval echo $rrd_doc)"
+    local val_rx="$2"
+    local val_tx="$3"
+
+    rrdtool update "$rrd" "N:${val_rx:-U}:${val_tx:-U}"
+
+    echo "Updated rrd: $1, ${val_rx:-U}:${val_tx:-U}, $rrd"
+}
+
+function fetch_status
+{
+    if [ "$2" = "RX" ]; then
+        awk -v h="CLIENT_LIST" -v cn="$1" '$1==h && $2==cn {print $5}' "$status_file"
+    elif [ "$2" = "TX" ]; then
+        awk -v h="CLIENT_LIST" -v cn="$1" '$1==h && $2==cn {print $6}' "$status_file"
+    fi
+}
+
+function fetch_int
+{
+    /sbin/ifconfig $1 | grep bytes | sed -re "s/.*$2 bytes:([0-9]+).*/\1/g"
+}
+
+function graph_rrd
+{
+    # $1 -> png
+    # $2 -> rrd
+    # $3 -> days
+    # $4 -> height
+    # $5 -> width
+    # $6 -> title
+
+    echo -n "Created graph: $1, "
+
+    rrdtool graph "$1" $7 \
+        --imgformat=PNG \
+        --start=now-$3 \
+        --title="$6" \
+        --rigid \
+        --base=1000 \
+        --height=$4 \
+        --width=$5 \
+        --border 1 \
+        --alt-autoscale-max \
+        --lower-limit='0' \
+        --vertical-label='bits/s' \
+        --slope-mode \
+        --font TITLE:10: \
+        --font AXIS:7: \
+        --font LEGEND:8: \
+        --font UNIT:7: \
+        DEF:a="$2":'bytes_rx':AVERAGE \
+        DEF:b="$2":'bytes_tx':AVERAGE \
+        CDEF:cdefa='a,8,*' \
+        CDEF:cdefe='b,8,*' \
+        AREA:cdefa#00CF00FF:'Inbound'  \
+        GPRINT:cdefa:LAST:' Current\:%8.2lf %s'  \
+        GPRINT:cdefa:AVERAGE:'Average\:%8.2lf %s'  \
+        GPRINT:cdefa:MAX:'Maximum\:%8.2lf %s\n'  \
+        LINE1:cdefe#002A97FF:'Outbound'  \
+        GPRINT:cdefe:LAST:'Current\:%8.2lf %s'  \
+        GPRINT:cdefe:AVERAGE:'Average\:%8.2lf %s'  \
+        GPRINT:cdefe:MAX:'Maximum\:%8.2lf %s\n'
+}
+
+function create_graphs
+{
+    # $1 -> cn or interface
+
+    local ui="$1"
+    local rrd="$(eval echo $rrd_doc)"
+
+    # graph_rrd expects:
+    #
+    # $1 -> png
+    # $2 -> rrd
+    # $3 -> days
+    # $4 -> height
+    # $5 -> width
+    # $6 -> title
+    # $7 -> optional args
+
+    # The standard graphs
+    graph_rrd "$(eval echo $day_png_doc)"       "$rrd" "1d"   "120" "576" "Daily Traffic:   $1"
+    graph_rrd "$(eval echo $week_png_doc)"      "$rrd" "7d"   "120" "576" "Weekly Traffic:  $1"
+    graph_rrd "$(eval echo $month_png_doc)"     "$rrd" "30d"  "120" "576" "Monthly Traffic: $1"
+    graph_rrd "$(eval echo $year_png_doc)"      "$rrd" "360d" "120" "576" "Yearly Traffic:  $1"
+
+    # The trio
+    graph_rrd "$(eval echo $day_idx_png_doc)"   "$rrd" "1d"   "80" "260"  "" "-Eg"
+    graph_rrd "$(eval echo $week_idx_png_doc)"  "$rrd" "7d"   "80" "260"  "" "-Eg"
+    graph_rrd "$(eval echo $long_idx_png_doc)"  "$rrd" "50d"  "50" "615"  "" "-Eg"
+
+}
+
+#
+# HTML templates
+#
+
+function create_html_head
+{
+    cat << ENDOFHTMLHEAD
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>$1</title>
+    <style>
+      body {
+          width: 50em;
+          margin: 0 auto;
+          padding: 10px;
+          font-family: Tahoma, Verdana, Arial, sans-serif;
+      }
+
+      table {
+          border-collapse: collapse;
+      }
+      td, th {
+          text-align: left;
+          font-weight: normal;
+      }
+      th {
+          background-color: #4CAF50;
+          color: white;
+      }
+
+      table.graph th {
+          padding: 2px 8px 2px 8px;
+      }
+      table.graph td {
+          padding: 0px;        
+      }
+
+      table.status {
+          width: 100%;
+      }
+      table.status td, th {
+          padding: 8px;        
+      }
+      table.status th {
+          background-color: #4CAF50;
+      }
+      table.status tr:nth-child(even) {
+          background-color: #f2f2f2;
+      }
+
+      ul {
+          list-style-type: none;
+          margin: 0;
+          padding: 0;
+          overflow: hidden;
+          background-color: #f2f2f2;
+      }
+      li {
+          float: left;
+          border-right:1px solid #bbb;
+          font-weight: bold;
+      }
+      li:last-child {
+          border-right: none;
+      }
+      li a {
+          display: block;
+          color: #555;
+          text-align: center;
+          padding: 8px 8px;
+          text-decoration: none;
+      }
+      li a:hover:not(.active) {
+          background-color: #ddd;
+      }
+      .active {
+          color: white;
+          background-color: #555;
+      }
+    </style>
+  </head>
+  <body>
+ENDOFHTMLHEAD
+}
+
+function create_html_foot
+{
+    cat << ENDOFHTMLFOOT
+  </body>
+</html>
+ENDOFHTMLFOOT
+}
+
+function create_html_nav
+{
+    echo    "<ul>"
+
+    # Status
+    echo -n "  <li><a "
+    [ "$1" = "status" ] && echo -n "class=active "
+    echo    "href=\"$status_url\">Client Status</a></li>"
+
+    # Active graphs
+    echo -n "  <li><a "
+    [ "$1" = "active" ] && echo -n "class=active "
+    echo    "href=\"$active_url\">Active Graphs</a></li>"
+
+    # All graphs
+    echo -n "  <li><a "
+    [ "$1" = "all" ] && echo -n "class=active "
+    echo    "href=\"$all_url\">All Graphs</a></li>"
+
+    # Any additional pages
+    if [ ! -z "$2" ]; then
+        echo "  <li><a class=active href=\"javascript:window.location.href=window.location.href\">$2</li>"
+    fi
+
+    echo    "</ul>"
+}
+
+function create_html_overview_item
+{
+    # $1 -> cn or interface
+
+    local ui="$1"
+    local imd="$(eval echo $day_idx_png_url)"
+    local imw="$(eval echo $week_idx_png_url)"
+    local imm="$(eval echo $long_idx_png_url)"
+    local url="$(eval echo $detail_url)"
+
+    cat << ENDOFHTMLOVERVIEWITEM
+<p>
+<table class=graph>
+  <tr>
+    <th colspan=2>Traffic: $1</th>
+  </tr>
+  <tr>
+    <td><a href="$url"><img src="$imd" /></a></td>
+    <td><a href="$url"><img src="$imw" /></a></td>
+  </tr>
+  <tr>
+    <td colspan=2><a href="$url"><img src="$imm" /></a></td>
+  </tr>
+</table>
+</p>
+ENDOFHTMLOVERVIEWITEM
+}
+
+function create_html_detail_item
+{
+    # $1 -> cn or interface
+
+    local ui="$1"
+    local imd="$(eval echo $day_png_url)"
+    local imw="$(eval echo $week_png_url)"
+    local imm="$(eval echo $month_png_url)"
+    local imy="$(eval echo $year_png_url)"
+
+    cat << ENDOFHTMLDETAILITEM
+<p>
+<table class=graph>
+  <tr><td><img src="$imd" /></td></tr>
+  <tr><td><img src="$imw" /></td></tr>
+  <tr><td><img src="$imm" /></td></tr>
+  <tr><td><img src="$imy" /></td></tr>
+</table>
+</p>
+ENDOFHTMLDETAILITEM
+}
+
+function create_html_status_table
+{
+    if [ -f "$status_file" ]; then
+        echo "    <p>"
+        echo "    <table class=status>"
+        echo "      <tr>"
+        echo "        <th>Name</th>"
+        echo "        <th>Real IP</th>"
+        echo "        <th>Virtual IP</th>"
+        echo "        <th>RX Bytes</th>"
+        echo "        <th>TX Bytes</th>"
+        echo "        <th>Connected Since</th>"
+        echo "      </tr>"
+
+        # Deal with tab delimiter
+        OLDIFS="$IFS"
+        IFS=$'\t'
+        while read header cn ra va rx tx cs ct un; do
+
+            if [ "$header" = "TIME" ]; then
+                status_time="$cn"
+            fi
+
+            if [ "$header" != "CLIENT_LIST" ]; then
+                continue
+            fi
+
+            echo "      <tr>"
+            echo "        <td>$cn</td>"
+            echo "        <td>$ra</td>"
+            echo "        <td>$va</td>"
+            echo "        <td>$rx</td>"
+            echo "        <td>$tx</td>"
+            echo "        <td>$cs</td>"
+            echo "      </tr>"
+
+        done < "$status_file"
+        IFS="$OLDIFS"
+        echo "    </table>"
+        echo "    </p>"
+        echo "    <p><em>Status file time: $status_time"
+        echo -n "    <br />Page created at: "
+        echo -n `date`
+        echo "</em></p>"
+    else
+        echo "<p>Status file has not been found.  Is OpenVPN running?</p>"
+        echo -n "    <p><em>Page created: "
+        echo -n `date`
+        echo "</em></p>"
+    fi
+}
+
+echo    "==== Starting: $0 $@"
+echo -n "==== "
+date
+
+Main $@
+
+echo    "==== Completed"
+
+# End

@@ -1,0 +1,105 @@
+#
+# The up.sh/down.sh matches the common-name when the script is
+# called by OpenVPN.  The syntax is loosely borrowed from
+# Debian network configuration directives.
+#
+# The up.sh/down.sh will source the file and the 'up' and 'down'
+# functions will execute the subsequent commands via eval.
+# 
+# Available variables
+# -------------------
+#
+# OpenVPN client connect script variables:
+#
+#   common_name
+#   trusted_ip
+#   trusted_port
+#   ifconfig_pool_remote_ip
+#   remote_port_1
+#   bytes_received
+#   bytes_sent
+#
+# Script variables
+#
+#   cn      : alias for common_name
+#   remip   : alias for ifconfig_pool_remote_ip
+#   chain   : script defined iptables chain
+#   comment ; script defined iptables comment
+#
+# Special functions
+# -----------------
+#
+# iptables-purge <chain>
+#	This function is provided as a convenient means to remove a
+#   user-defined chain from iptables and remove refences to the
+#   user-defined chain from the FORWARD, INPUT and OUTPUT chains.
+#
+
+#
+# Examples
+# --------
+#
+
+# Remove chain on client disconnect
+#
+#down iptables-purge $chain
+
+# Create $iptables chain
+#
+#up iptables-purge $chain
+#up $iptables -N $chain
+
+# Wires-X open ports
+#
+#up $iptables -A $chain -p udp --dport 46100 -j ACCEPT
+#up $iptables -A $chain -p udp --dport 46110 -j ACCEPT
+#up $iptables -A $chain -p udp --dport 46112 -j ACCEPT
+#up $iptables -A $chain -p udp --dport 46114 -j ACCEPT
+#up $iptables -A $chain -p udp --dport 46120 -j ACCEPT
+#up $iptables -A $chain -p udp --dport 46122 -j ACCEPT
+
+# IRLP open ports
+#
+# 22 - SSH (required only for any requested remote admin help )
+# 2074 through 2093 UDP - IRLP Audio (bi-directional UDP)
+# 15425, 15426, 15427 IRLP Control/Update Ports - TCP
+#
+#up $iptables -A $chain -p tcp --dport 22 -j ACCEPT
+#up $iptables -A $chain -p tcp --dport 15425:15427 -j ACCEPT
+#up $iptables -A $chain -p udp --dport 2074:2093 -j ACCEPT
+
+# Firewall allowing ICMP
+#
+#up $iptables -A $chain -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+#up $iptables -A $chain -p icmp --icmp-type 8 -m limit --limit 10/second -j ACCEPT
+#up $iptables -A $chain -p udp -j REJECT --reject-with icmp-port-unreachable
+#up $iptables -A $chain -p tcp -j REJECT --reject-with tcp-reset
+#up $iptables -A $chain -j REJECT --reject-with icmp-proto-unreachable
+
+# Insert into FORWARD table
+#
+#up $iptables -I FORWARD -i ampr0 -d $remip -j $chain -m comment --comment $comment
+#up $iptables -I FORWARD -i eth0 -d $remip -j $chain -m comment --comment $comment
+
+#
+# Default behaviour
+# -----------------
+#
+# The 'default' client file is applied if a matching client file cannot
+# be found.  The default file content is below.
+#
+
+#up iptables-purge $chain
+#up $iptables -N $chain
+#up $iptables -A $chain -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+#up $iptables -A $chain -p icmp --icmp-type 8 -m limit --limit 10/second -j ACCEPT
+#up $iptables -A $chain -p udp -j REJECT --reject-with icmp-port-unreachable
+#up $iptables -A $chain -p tcp -j REJECT --reject-with tcp-reset
+#up $iptables -A $chain -j REJECT --reject-with icmp-proto-unreachable
+#up $iptables -I FORWARD -i ampr0 -d $remip -j $chain -m comment --comment $comment
+#up $iptables -I FORWARD -i eth0 -d $remip -j $chain -m comment --comment $comment
+
+#down iptables-purge $chain
+
+
+

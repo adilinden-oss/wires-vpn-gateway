@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# A simple shell script that wraps the ampr-ripd daemon.  It allows
+# starting via systemd, configuration via config file, and logging
+# to syslog (via logger).
+#
+
+CONF="/etc/run-ampr.conf"
+PIDFILE="/var/run/ampr-ripd.pid"
+LOGPRI="daemon.info"
+LOGTAG="ampr-ripd"
+
+# Source config
+if [ -f "$CONF" ]; then
+    . "$CONF"
+else
+	exit 1
+fi
+
+# Check on pid file
+if [ -e "$PIDFILE" ]; then
+	read pid < "$PIDFILE"
+	if [ -n "${pid:-}" ]; then
+		if ps "${pid:-}" >/dev/null 2>&1; then
+			echo "Process is running: $pid!"
+			exit 1
+		fi
+	fi
+fi
+
+# Check on daemon
+pid=$(pidof ampr-ripd)
+if [ -n "${pid:-}" ]; then
+	echo "Process is running: $pid!"
+	exit 1
+fi
+
+# Run the daemon
+/usr/sbin/ampr-ripd -d $OPTS 2>&1 | /usr/bin/logger -i -p "$LOGPRI" -t "$LOGTAG" &
+
+# Capture pid
+jobs -p > "$PIDFILE"

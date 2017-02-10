@@ -1,0 +1,18 @@
+#
+# Run the ampr-ripd daemon via run-ampr wrapper script
+#
+[Unit]
+Description=Routing Daemon for AMPRNet Gateways
+After=network.target auditd.service
+
+[Service]
+Type=forking
+PIDFile=/var/run/ampr-ripd.pid
+ExecStart=/usr/sbin/run-ampr
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=32s
+
+[Install]
+WantedBy=multi-user.target
